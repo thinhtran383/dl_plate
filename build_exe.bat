@@ -41,7 +41,7 @@ set CMD=%CMD% --noconsole
 set CMD=%CMD% --name "%APP_NAME%"
 set CMD=%CMD% --add-data "app;app"
 set CMD=%CMD% --add-data "xs-v2-global-model;xs-v2-global-model"
-set CMD=%CMD% --add-data "plate_detection_v8.pt;."
+set CMD=%CMD% --add-data "best_stripped.pt;."
 set CMD=%CMD% --add-data "plate.ico;."
 set CMD=%CMD% --icon=plate.ico
 set CMD=%CMD% --hidden-import "pystray"
