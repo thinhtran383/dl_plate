@@ -1,0 +1,17 @@
+fastapi
+hypercorn
+h2
+pydantic-settings
+python-multipart
+numpy
+opencv-python-headless
+onnxruntime
+PyYAML
+Pillow
+requests
+pandas
+scipy
+tqdm
+psutil
+matplotlib
+ultralytics

@@ -1,0 +1,131 @@
+name: Build EXE
+
+# Trigger 1: Push tag dang "v*" (vi du: git tag v1.0.0 && git push origin v1.0.0)
+# Trigger 2: Kich hoat thu cong qua GitHub Actions UI
+#            -> tu dong lay tag moi nhat, bump patch, tao tag moi, build, tao release
+on:
+  workflow_dispatch: {}
+
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write   # can thiet de tao tag va release
+
+    steps:
+      # 1. Checkout full history + tags
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # can full history de lay tag
+          fetch-tags: true
+
+      # 2. Auto-bump tag (chi khi manual trigger)
+      #    - Lay tag moi nhat (vi du v1.2.3)
+      #    - Tang patch len 1 -> v1.2.4
+      #    - Tao va push tag moi vao repo
+      - name: Auto-bump version
+        if: github.event_name == 'workflow_dispatch'
+        id: bump
+        shell: bash
+        run: |
+          LATEST=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$LATEST" ]; then
+            NEW_TAG="v1.0.0"
+          else
+            IFS='.' read -r major minor patch <<< "${LATEST#v}"
+            NEW_TAG="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "Bumping $LATEST -> $NEW_TAG"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$NEW_TAG"
+          git push origin "$NEW_TAG"
+
+      # 3. Xac dinh tag se dung cho build nay
+      - name: Resolve tag
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ steps.bump.outputs.new_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      # 4. Setup Python 3.12
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 5. Tao venv va cai dependencies
+      - name: Install dependencies
+        shell: cmd
+        run: |
+          py -3.12 -m venv venv
+          venv\Scripts\pip install --upgrade pip --quiet
+          venv\Scripts\pip install -r requirements.txt --quiet
+          venv\Scripts\pip install pyinstaller --quiet
+
+      # 6. Tao .env mac dinh cho build
+      - name: Create .env
+        shell: cmd
+        run: |
+          (
+            echo APP_NAME=DL Plate Recognition API
+            echo DEBUG=False
+            echo HOST=0.0.0.0
+            echo PORT=8080
+            echo ALLOWED_ORIGINS=["*"]
+            echo DETECTION_MODEL_PATH=best_stripped.pt
+            echo OCR_MODEL_DIR=xs-v2-global-model
+            echo DETECTION_CONF=0.4
+            echo DETECTION_IOU=0.45
+            echo DETECTION_BBOX_PADDING=0.00
+            echo DETECTION_INPUT_WIDTH=960
+            echo PLATE_OVERLAY_DIVISOR=5
+            echo OUTPUT_MAX_WIDTH=0
+            echo OUTPUT_JPEG_QUALITY=0
+            echo ROI_CONFIG_PATH=roi_config.json
+          ) > .env
+
+      # 7. Build voi PyInstaller spec
+      - name: Build EXE
+        shell: cmd
+        run: |
+          venv\Scripts\pyinstaller dl_plate_server.spec --noconfirm --clean
+
+      # 8. Zip artifact
+      - name: Zip dist
+        shell: cmd
+        run: |
+          cd dist
+          tar -acf dl_plate_server-${{ steps.version.outputs.tag }}.zip dl_plate_server
+
+      # 9. Upload artifact (luu tren Actions 30 ngay)
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dl_plate_server-${{ steps.version.outputs.tag }}
+          path: dist/dl_plate_server/
+          retention-days: 30
+
+      # 10. Tao GitHub Release va dinh kem file zip
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "DL Plate Server ${{ steps.version.outputs.tag }}"
+          draft: false
+          prerelease: false
+          files: dist/dl_plate_server-${{ steps.version.outputs.tag }}.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

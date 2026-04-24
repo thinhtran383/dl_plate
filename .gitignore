@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+*.spec.bak
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Model files - cho phep commit vao repo
+# Luu y: neu file > 100MB thi dung Git LFS thay the
+
+# Logs
+logs/
+*.log
+
+# ROI config (du lieu runtime, khong phai code)
+roi_config.json
+
+# Test data
+test_image/
+
+# PyInstaller output
+dist/
+build/
+*.spec.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Coverage
+.coverage
+htmlcov/
