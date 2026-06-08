@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: List[str] = ["*"]
 
     # Model paths (relative - se duoc resolve thanh absolute bang BASE_DIR)
-    DETECTION_MODEL_PATH: str = "plate_detection_v8.pt"
+    DETECTION_MODEL_PATH: str = "best_stripped.pt"
     OCR_MODEL_DIR: str = "xs-v2-global-model"
 
     # Detection
@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     DETECTION_BBOX_PADDING: float = 0.0
     DETECTION_INPUT_WIDTH: int = 960     # 0 = dung anh goc, >0 = resize truoc khi YOLO detect
     ROI_CONFIG_PATH: str = "roi_config.json"
+
+    # OCR: ma vung uu tien khi sua loi nhan dang (trong .env: 29,30,31,32,33,40)
+    PLATE_REGION_CODES: str = ""
 
     # Output
     PLATE_OVERLAY_DIVISOR: int = 4         # 4 = crop chiem 1/4 chieu rong anh xe
@@ -48,6 +51,12 @@ class Settings(BaseSettings):
     @property
     def abs_ocr_model_dir(self) -> str:
         return os.path.join(BASE_DIR, self.OCR_MODEL_DIR)
+
+    @property
+    def plate_region_codes(self) -> List[str]:
+        if not self.PLATE_REGION_CODES.strip():
+            return []
+        return [c.strip() for c in self.PLATE_REGION_CODES.split(',') if c.strip()]
 
 
 settings = Settings()

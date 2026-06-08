@@ -2,10 +2,98 @@ import base64
 import cv2
 import numpy as np
 from io import BytesIO
+from typing import List, Optional, Tuple
 
 from PIL import Image
 from fastapi.responses import JSONResponse
 from starlette.datastructures import UploadFile
+
+
+# Tem khung bien so thuong doc nham thanh ky tu dau (HONDA -> HON0A...)
+_FRAME_BRAND_PREFIXES = (
+    'HONDA', 'HON0A', 'HOND', 'YAMAHA', 'YAMAH', 'SUZUKI', 'SUZUK',
+    'SYM', 'PIAGGIO', 'VINFAST', 'KAWASAKI', 'KTM', 'KYMCO',
+)
+
+from .plate_corrector import correct_vn_plate_text
+
+
+# ---------------------------------------------------------------------------
+# Plate crop / text helpers
+# ---------------------------------------------------------------------------
+
+def trim_plate_crop_for_ocr(
+    plate_img: np.ndarray,
+    top_ratio: float,
+) -> np.ndarray:
+    """Cat bo phan tren crop theo ty le da phat hien (chi dung khi co tem khung)."""
+    h, w = plate_img.shape[:2]
+    y1 = int(h * max(0.0, min(top_ratio, 0.5)))
+    if h - y1 < 8 or w < 16:
+        return plate_img
+    return plate_img[y1:, :]
+
+
+def detect_frame_brand_band(plate_img: np.ndarray) -> Optional[float]:
+    """
+    Phat hien tem khung (vung toi o phan tren crop, vd. chu HONDA tren nen den).
+    Tra ve ty le chieu cao can cat, hoac None neu khong co tem.
+    """
+    h, w = plate_img.shape[:2]
+    if h < 24 or w < 40:
+        return None
+
+    gray = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
+    best_ratio: Optional[float] = None
+    best_gap = 0.0
+
+    for ratio in (0.12, 0.16, 0.20, 0.24, 0.28, 0.32):
+        top_h = max(4, int(h * ratio))
+        if top_h >= h - 8:
+            continue
+
+        top_mean  = float(gray[:top_h, :].mean())
+        rest_mean = float(gray[top_h:, :].mean())
+        gap = rest_mean - top_mean
+
+        # Tem khung: nen den o tren, vung bien so sang hon o duoi
+        if gap > 18 and gap > best_gap:
+            edge_row = gray[max(0, top_h - 2):min(h, top_h + 2), :]
+            if edge_row.size and float(edge_row.std()) > 12:
+                best_gap   = gap
+                best_ratio = min(ratio + 0.03, 0.38)
+
+    return best_ratio
+
+
+def has_frame_brand_in_text(text: str) -> bool:
+    cleaned = text.upper().replace('_', '')
+    return any(cleaned.startswith(p) for p in _FRAME_BRAND_PREFIXES)
+
+
+def strip_frame_brand_prefix(text: str) -> str:
+    cleaned = text.upper().replace('_', '')
+    for prefix in _FRAME_BRAND_PREFIXES:
+        if cleaned.startswith(prefix):
+            return cleaned[len(prefix):]
+    return cleaned
+
+
+def _preferred_regions():
+    from .config import settings
+    codes = settings.plate_region_codes
+    return codes if codes else None
+
+
+def extract_vn_plate_text(text: str) -> Optional[str]:
+    """Trich xuat + sua loi bien so VN tu chuoi OCR (co the bi dinh tem khung)."""
+    cleaned = strip_frame_brand_prefix(text)
+    return correct_vn_plate_text(cleaned, preferred_regions=_preferred_regions())
+
+
+def is_valid_vn_plate(text: str) -> bool:
+    cleaned = strip_frame_brand_prefix(text)
+    return correct_vn_plate_text(cleaned, preferred_regions=_preferred_regions()) is not None
 
 
 # ---------------------------------------------------------------------------

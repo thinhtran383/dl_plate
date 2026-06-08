@@ -264,6 +264,9 @@ async def detect_plate_base64(request: Request):
                     form_data['roi'] = body_str[start_roi:end_roi].strip()
         else:
             try:
+                # Decode URL-encoded body (Java client thường gửi form-urlencoded)
+                from urllib.parse import unquote
+                body_str = unquote(body_str)
                 import json
                 form_data = json.loads(body_str)
             except Exception:
