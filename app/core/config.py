@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     DETECTION_INPUT_WIDTH: int = 960     # 0 = dung anh goc, >0 = resize truoc khi YOLO detect
     ROI_CONFIG_PATH: str = "roi_config.json"
 
+    # OCR: so bien the tien xu ly de voting (0 hoac 1 = tat voting, chi chay original)
+    OCR_VOTING_VARIANTS: int = 8
+
     # OCR: ma vung uu tien khi sua loi nhan dang (trong .env: 29,30,31,32,33,40)
     PLATE_REGION_CODES: str = ""
 

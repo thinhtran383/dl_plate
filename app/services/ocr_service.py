@@ -6,6 +6,7 @@ import onnxruntime as ort
 import cv2
 
 from ..core.config import settings
+from ..core.preprocess import generate_variants
 from ..core.utils import (
     detect_frame_brand_band,
     extract_vn_plate_text,
@@ -44,36 +45,52 @@ def prepare_input(gray: np.ndarray, cfg: dict) -> np.ndarray:
     return np.expand_dims(img.astype(np.uint8), axis=0)
 
 
-def decode(outputs: list, cfg: dict) -> Tuple[str, float]:
-    """Giai ma outputs ONNX -> (plate_text, confidence)."""
+def _extract_prob_matrix(outputs: list, cfg: dict) -> np.ndarray:
+    """Chuyen ONNX outputs -> probability matrix shape (n_slots, len(alphabet))."""
     alphabet = cfg['alphabet']
-    pad_char = cfg['pad_char']
     n_slots  = cfg['max_plate_slots']
-
-    chars: List[str]   = []
-    confs: List[float] = []
+    n_chars  = len(alphabet)
 
     if len(outputs) == n_slots:
+        rows = []
         for slot in outputs:
-            idx  = int(np.argmax(slot[0]))
-            conf = float(np.max(slot[0]))
-            chars.append(alphabet[idx])
-            confs.append(conf)
-    else:
-        arr = outputs[0]
-        if arr.ndim == 3:
-            arr = arr[0]
-        elif arr.ndim == 2 and arr.shape[0] == 1:
-            arr = arr[0].reshape(n_slots, len(alphabet))
-        indices     = np.argmax(arr, axis=-1)
-        conf_scores = np.max(arr, axis=-1)
-        chars = [alphabet[i] for i in indices]
-        confs = conf_scores.tolist()
+            row = slot[0].flatten()
+            if len(row) < n_chars:
+                row = np.pad(row, (0, n_chars - len(row)))
+            rows.append(row[:n_chars])
+        return np.array(rows, dtype=np.float32)
+
+    arr = outputs[0]
+    if arr.ndim == 3:
+        arr = arr[0]
+    elif arr.ndim == 2 and arr.shape[0] == 1:
+        arr = arr[0].reshape(n_slots, n_chars)
+    return arr.astype(np.float32)
+
+
+def decode_from_probs(probs: np.ndarray, cfg: dict) -> Tuple[str, float, List[float]]:
+    """
+    Giai ma tu probability matrix -> (plate_text, avg_confidence, per_char_confs).
+    """
+    alphabet = cfg['alphabet']
+    pad_char = cfg['pad_char']
+
+    indices     = np.argmax(probs, axis=-1)
+    conf_scores = np.max(probs, axis=-1)
+    chars = [alphabet[i] for i in indices]
+    confs = conf_scores.tolist()
 
     valid_confs = [c for ch, c in zip(chars, confs) if ch != pad_char]
     plate       = ''.join(ch for ch in chars if ch != pad_char)
     confidence  = sum(valid_confs) / len(valid_confs) if valid_confs else 0.0
-    return plate, round(confidence, 4)
+    return plate, round(confidence, 4), confs
+
+
+def decode(outputs: list, cfg: dict) -> Tuple[str, float]:
+    """Giai ma outputs ONNX -> (plate_text, confidence). Backward-compatible."""
+    probs = _extract_prob_matrix(outputs, cfg)
+    text, conf, _ = decode_from_probs(probs, cfg)
+    return text, conf
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +125,8 @@ class OCRService:
             self._cfg     = None
 
     # ------------------------------------------------------------------
+    # Single-crop OCR (backward-compatible, dung khi voting = off)
+    # ------------------------------------------------------------------
 
     def _ocr_single_crop(self, crop_img: np.ndarray) -> Tuple[str, float]:
         gray   = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
@@ -115,6 +134,157 @@ class OCRService:
         input_name = self._session.get_inputs()[0].name
         outputs    = self._session.run(None, {input_name: tensor})
         return decode(outputs, self._cfg)
+
+    # ------------------------------------------------------------------
+    # Multi-variant OCR with per-character probability voting
+    # ------------------------------------------------------------------
+
+    def _run_onnx_probs(self, gray: np.ndarray) -> np.ndarray:
+        """Chay ONNX tren 1 anh gray, tra ve prob matrix (n_slots, n_chars)."""
+        tensor     = prepare_input(gray, self._cfg)
+        input_name = self._session.get_inputs()[0].name
+        outputs    = self._session.run(None, {input_name: tensor})
+        return _extract_prob_matrix(outputs, self._cfg)
+
+    def _ocr_multi_variant(
+        self, crop_img: np.ndarray, idx: int, label: str = '',
+    ) -> Tuple[str, float, List[float]]:
+        """
+        Chay OCR voi nhieu bien the tien xu ly.
+        Ket hop: weighted-sum voting + best-individual selection.
+
+        Returns: (plate_text, avg_conf, per_char_confs)
+        """
+        max_v = settings.OCR_VOTING_VARIANTS
+        gray  = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
+
+        if max_v <= 1:
+            probs = self._run_onnx_probs(gray)
+            text, conf, char_confs = decode_from_probs(probs, self._cfg)
+            logger.debug(
+                f"[OCR] Crop #{idx}/{label or 'single'}: "
+                f"raw='{text}' conf={conf:.4f} (voting=off)"
+            )
+            return text, conf, char_confs
+
+        variants     = generate_variants(gray, max_variants=max_v)
+        prob_sum     = None
+        weight_total = 0.0
+        individual_results: List[Tuple[str, float, str]] = []
+
+        for v_name, v_gray in variants:
+            probs = self._run_onnx_probs(v_gray)
+            text_v, conf_v, _ = decode_from_probs(probs, self._cfg)
+
+            w = conf_v ** 3
+            if prob_sum is None:
+                prob_sum = probs * w
+            else:
+                prob_sum += probs * w
+            weight_total += w
+
+            individual_results.append((text_v, conf_v, v_name))
+
+            logger.debug(
+                f"[OCR] Crop #{idx}/{label or 'vote'}/{v_name}: "
+                f"raw='{text_v}' conf={conf_v:.4f}"
+            )
+
+        if prob_sum is None or weight_total == 0:
+            return '', 0.0, []
+
+        avg_probs = prob_sum / weight_total
+        voted_text, voted_conf, voted_chars = decode_from_probs(avg_probs, self._cfg)
+
+        logger.debug(
+            f"[OCR] Crop #{idx}/{label or 'vote'} VOTED: "
+            f"'{voted_text}' conf={voted_conf:.4f} ({len(variants)} variants)"
+        )
+
+        # --- Chon ket qua tot nhat: voted vs best individual ---
+        best_indiv = self._pick_best_individual(
+            individual_results, voted_text, voted_conf, idx, label,
+        )
+        if best_indiv is not None:
+            return best_indiv[0], best_indiv[1], voted_chars
+
+        return voted_text, voted_conf, voted_chars
+
+    def _pick_best_individual(
+        self,
+        results: List[Tuple[str, float, str]],
+        voted_text: str,
+        voted_conf: float,
+        idx: int,
+        label: str,
+    ) -> Optional[Tuple[str, float]]:
+        """
+        Tim variant tot nhat so voi voted result.
+        Uu tien: valid plate + confidence cao + 9 chars > 8 chars.
+        Tra ve (text, conf) hoac None neu voted tot hon.
+        """
+        voted_norm  = self._normalize_ocr_text(voted_text)
+        voted_valid = is_valid_vn_plate(voted_norm)
+        voted_len   = len(voted_norm)
+
+        best_text: Optional[str] = None
+        best_conf  = 0.0
+        best_score = -999.0
+        best_vname = ''
+
+        for v_text, v_conf, v_name in results:
+            v_norm  = self._normalize_ocr_text(v_text)
+            v_valid = is_valid_vn_plate(v_norm)
+            v_len   = len(v_norm)
+
+            # Score: validity + confidence + length preference (9 > 8)
+            score = v_conf
+            if v_valid:
+                score += 1.0
+            if v_len == 9:
+                score += 0.1
+            elif v_len == 8:
+                score += 0.0
+
+            if score > best_score:
+                best_score = score
+                best_text  = v_text
+                best_conf  = v_conf
+                best_vname = v_name
+
+        if best_text is None:
+            return None
+
+        best_norm  = self._normalize_ocr_text(best_text)
+        best_valid = is_valid_vn_plate(best_norm)
+
+        # Score voted the same way
+        voted_score = voted_conf
+        if voted_valid:
+            voted_score += 1.0
+        if voted_len == 9:
+            voted_score += 0.1
+
+        should_override = False
+        if best_valid and not voted_valid:
+            should_override = True
+        elif best_score > voted_score:
+            should_override = True
+
+        if should_override:
+            logger.debug(
+                f"[OCR] Crop #{idx}/{label or 'vote'}: "
+                f"'{best_vname}' overrides voted: "
+                f"'{best_norm}' score={best_score:.4f} > "
+                f"voted '{voted_norm}' score={voted_score:.4f}"
+            )
+            return best_text, best_conf
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     def _normalize_ocr_text(self, text: str) -> str:
         extracted = extract_vn_plate_text(text)
@@ -135,12 +305,15 @@ class OCRService:
         return conf - 1.0
 
     def _needs_trim_retry(self, text: str, plate_img: np.ndarray) -> bool:
-        """Chi cat lai khi co dau hieu tem khung trong anh hoac trong ket qua OCR."""
         if has_frame_brand_in_text(text):
             return True
         if is_valid_vn_plate(self._normalize_ocr_text(text)):
             return False
         return detect_frame_brand_band(plate_img) is not None
+
+    # ------------------------------------------------------------------
+    # Main OCR per-crop (with trim fallback)
+    # ------------------------------------------------------------------
 
     def _ocr_plate_with_fallback(
         self,
@@ -148,19 +321,19 @@ class OCRService:
         idx: int,
     ) -> Tuple[Optional[Tuple[float, str, float]], np.ndarray]:
         """
-        OCR full crop truoc; chi cat tem khi phat hien tem thuc su.
+        OCR full crop truoc (multi-variant voting); chi cat tem khi can.
         Returns: (best_candidate | None, source_plate_img)
         """
         best: Optional[Tuple[float, str, float]] = None
 
         def _try(crop: np.ndarray, label: str):
             nonlocal best
-            text, conf = self._ocr_single_crop(crop)
+            text, conf, _ = self._ocr_multi_variant(crop, idx, label)
             normalized = self._normalize_ocr_text(text)
             score      = self._score_candidate(text, conf)
             logger.debug(
-                f"[OCR] Crop #{idx}/{label}: raw='{text}' "
-                f"normalized='{normalized}' conf={conf:.4f} score={score:.4f}"
+                f"[OCR] Crop #{idx}/{label}: normalized='{normalized}' "
+                f"conf={conf:.4f} score={score:.4f}"
             )
             if best is None or score > best[0]:
                 best = (score, normalized, conf)
@@ -175,14 +348,18 @@ class OCRService:
 
         trim_ratio = detect_frame_brand_band(plate_img)
         if trim_ratio is None:
-            logger.debug(f"[OCR] Crop #{idx}: co chu tem trong OCR nhung khong phat hien vung tem trong anh.")
+            logger.debug(
+                f"[OCR] Crop #{idx}: co chu tem trong OCR nhung "
+                f"khong phat hien vung tem trong anh."
+            )
             return best, plate_img
 
         trimmed = trim_plate_crop_for_ocr(plate_img, trim_ratio)
         logger.debug(
-            f"[OCR] Crop #{idx}: phat hien tem khung, cat top {trim_ratio*100:.0f}% roi OCR lai."
+            f"[OCR] Crop #{idx}: phat hien tem khung, "
+            f"cat top {trim_ratio*100:.0f}% roi OCR lai."
         )
-        _try(trimmed, f'trim_adaptive_{trim_ratio:.2f}')
+        _try(trimmed, f'trim_{trim_ratio:.2f}')
 
         return best, plate_img
 
