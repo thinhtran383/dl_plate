@@ -47,13 +47,8 @@ def _log_in_out(endpoint: str, req_data: dict, response: JSONResponse):
     req_msg = f"[{endpoint}] REQUEST IN : {cleaned_req}"
     res_msg = f"[{endpoint}] RESPONSE OUT: {res_dict}"
 
-    # Ghi ra file (.log handler đã config trong root)
     logger.info(req_msg)
     logger.info(res_msg)
-    
-    # Ghi ra terminal (stdout)
-    print(req_msg)
-    print(res_msg)
 
 
 
@@ -132,12 +127,16 @@ async def _process_image(
     )
 
     plate_crops = detection_service.detect_plate(img, roi_points=roi_points)
+    plate_crops = [
+        c for c in plate_crops
+        if c is not None and getattr(c, "size", 0) > 0
+    ]
     t_yolo = time.perf_counter()
 
     if not plate_crops:
         elapsed = int((t_yolo - t_start) * 1000)
         logger.warning(
-            f"[PIPELINE] Khong co crop nao tu YOLO - pipeline dung lai, tra ve rong. "
+            f"[PIPELINE] YOLO khong cat duoc bien so - bo qua OCR, tra ve rong. "
             f"[YOLO={elapsed}ms]"
         )
         return '', '', 0.0
@@ -264,6 +263,9 @@ async def detect_plate_base64(request: Request):
                     form_data['roi'] = body_str[start_roi:end_roi].strip()
         else:
             try:
+                # Decode URL-encoded body (Java client thường gửi form-urlencoded)
+                from urllib.parse import unquote
+                body_str = unquote(body_str)
                 import json
                 form_data = json.loads(body_str)
             except Exception:

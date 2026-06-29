@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: List[str] = ["*"]
 
     # Model paths (relative - se duoc resolve thanh absolute bang BASE_DIR)
-    DETECTION_MODEL_PATH: str = "plate_detection_v8.pt"
+    DETECTION_MODEL_PATH: str = "best_stripped.pt"
     OCR_MODEL_DIR: str = "xs-v2-global-model"
 
     # Detection
@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     PLATE_OVERLAY_DIVISOR: int = 4         # 4 = crop chiem 1/4 chieu rong anh xe
     OUTPUT_MAX_WIDTH: int = 0              # 0 = off, >0 = scale down anh output ve chieu rong nay
     OUTPUT_JPEG_QUALITY: int = 0           # 0 = off (dung PIL default=75), 1-95 = tuy chinh
+
+    # Logging (rotation kieu Spring Boot / log4j)
+    LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10 MB moi file
+    LOG_RETENTION_DAYS: int = 30           # tu xoa log cu hon N ngay
 
     @property
     def abs_detection_model(self) -> str:

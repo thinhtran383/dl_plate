@@ -116,6 +116,14 @@ class OCRService:
             logger.error("[OCR] Session ONNX chua san sang - bo qua OCR.")
             return '', '', 0.0
 
+        plate_images = [
+            c for c in (plate_images or [])
+            if c is not None and getattr(c, "size", 0) > 0
+        ]
+        if not plate_images:
+            logger.warning("[OCR] Khong co crop tu YOLO - bo qua OCR, tra ve rong.")
+            return '', '', 0.0
+
         logger.debug(f"[OCR] Bat dau OCR - co {len(plate_images)} crop bien so.")
 
         plate_number    = ''

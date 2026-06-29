@@ -39,7 +39,6 @@ set CMD=%CMD% --noconfirm
 set CMD=%CMD% --clean
 set CMD=%CMD% --noconsole
 set CMD=%CMD% --name "%APP_NAME%"
-set CMD=%CMD% --add-data "app;app"
 set CMD=%CMD% --add-data "xs-v2-global-model;xs-v2-global-model"
 set CMD=%CMD% --add-data "best_stripped.pt;."
 set CMD=%CMD% --add-data "plate.ico;."
